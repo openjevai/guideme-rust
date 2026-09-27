@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use client::{Client, ClientBuilder};
+pub use client::{Client, ClientBuilder, OPENJEV_DEFAULT_BASE_URL};
 
 /// The `reqwest` this crate was built against.
 ///

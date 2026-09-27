@@ -45,6 +45,7 @@ struct Inner {
     model: Model,
     policy: Policy,
     record_state: bool,
+    provider: &'static str,
 }
 
 /// Configures a [`Guide`].
@@ -55,6 +56,7 @@ pub struct GuideBuilder {
     model: Model,
     policy: Policy,
     record_state: bool,
+    provider: &'static str,
 }
 
 /// The settings that build a [`Client`], and that an injected one already carries.
@@ -125,10 +127,14 @@ impl Transport {
 }
 
 impl Guide {
-    /// Read `TYPESAFE_API_KEY` (required), `TYPESAFE_BASE_URL` and `GUIDEME_MODEL` (optional).
+    /// Read the API key and optional settings from the environment.
     ///
     /// The one-liner. [`GuideBuilder::from_env`] is the same reading on a builder you are
     /// still configuring.
+    ///
+    /// Provider selection: `JEV_PROVIDER=openjev` forces OpenJEV; otherwise `TYPESAFE_API_KEY`
+    /// (the unchanged default) or, when it is absent, `OPENJEV_API_KEY`. See
+    /// [`GuideBuilder::from_env`] for the full list of variables.
     pub fn from_env() -> Result<Self, Error> {
         Self::builder().from_env()?.build()
     }
@@ -141,6 +147,7 @@ impl Guide {
             model: Model::latest(),
             policy: Policy::new(),
             record_state: false,
+            provider: "typesafe",
         }
     }
 
@@ -155,6 +162,7 @@ impl Guide {
                 model: self.inner.model.clone(),
                 policy,
                 record_state: self.inner.record_state,
+                provider: self.inner.provider,
             }),
         })
     }
@@ -203,7 +211,7 @@ impl Guide {
             target: TARGET,
             "guideme.ask",
             otel.kind = "client",
-            gen_ai.provider.name = "typesafe",
+            gen_ai.provider.name = self.inner.provider,
             gen_ai.operation.name = "ask",
             gen_ai.request.model = self.inner.model.as_str(),
             gen_ai.response.model = field::Empty,
@@ -385,26 +393,69 @@ fn emit(id: &QuestionId, outcome: &Outcome, t: Thresholds) {
 }
 
 impl GuideBuilder {
-    /// Read `TYPESAFE_API_KEY` (required), `TYPESAFE_BASE_URL` and `GUIDEME_MODEL` (optional),
-    /// and leave everything else on this builder alone.
+    /// Read the API key and optional settings from the environment, and leave everything else
+    /// on this builder alone.
     ///
     /// `Guide::builder().from_env()?.policy(HOUSE).build()?` is the shape this exists for.
     /// [`Guide::from_env`] is the one-liner when there is nothing else to set.
     ///
+    /// # Provider selection
+    /// 1. `JEV_PROVIDER=openjev` → OpenJEV (`OPENJEV_API_KEY`, `OPENJEV_BASE_URL`, model
+    ///    `openjev`).
+    /// 2. Otherwise, if `TYPESAFE_API_KEY` is set → TypeSafe, the unchanged default
+    ///    (`TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL`, model `jev-latest`).
+    /// 3. Otherwise, if only `OPENJEV_API_KEY` is set → OpenJEV.
+    ///
+    /// `GUIDEME_MODEL` overrides the model for either provider.
+    ///
     /// # Errors
-    /// [`Error::Config`] when `TYPESAFE_API_KEY` is not set.
+    /// [`Error::Config`] when the required key for the chosen provider is not set, or when
+    /// `JEV_PROVIDER` holds a value other than `openjev` or `typesafe`.
     pub fn from_env(self) -> Result<Self, Error> {
-        let key = std::env::var("TYPESAFE_API_KEY").map_err(|_| Error::Config {
-            detail: "TYPESAFE_API_KEY is not set".into(),
-        })?;
-        let mut builder = self.api_key(ApiKey::from(key));
-        if let Ok(url) = std::env::var("TYPESAFE_BASE_URL") {
-            builder = builder.base_url(url);
+        let use_openjev = match std::env::var("JEV_PROVIDER").ok().as_deref() {
+            Some("openjev") => true,
+            Some("typesafe") => false,
+            Some(other) => {
+                return Err(Error::Config {
+                    detail: format!(
+                        "JEV_PROVIDER={other:?} is not recognised; use \"openjev\" or \"typesafe\""
+                    ),
+                });
+            }
+            None => std::env::var("TYPESAFE_API_KEY").is_err(),
+        };
+
+        if use_openjev {
+            let key = std::env::var("OPENJEV_API_KEY").map_err(|_| Error::Config {
+                detail: "OPENJEV_API_KEY is not set (JEV_PROVIDER=openjev, or no \
+                         TYPESAFE_API_KEY)"
+                    .into(),
+            })?;
+            let mut builder = self.api_key(ApiKey::from(key)).provider("openjev");
+            if let Ok(url) = std::env::var("OPENJEV_BASE_URL") {
+                builder = builder.base_url(url);
+            } else {
+                builder = builder.base_url(crate::api::OPENJEV_DEFAULT_BASE_URL.to_owned());
+            }
+            if let Ok(model) = std::env::var("GUIDEME_MODEL") {
+                builder = builder.model(Model::new(model));
+            } else {
+                builder = builder.model(Model::openjev());
+            }
+            Ok(builder)
+        } else {
+            let key = std::env::var("TYPESAFE_API_KEY").map_err(|_| Error::Config {
+                detail: "TYPESAFE_API_KEY is not set".into(),
+            })?;
+            let mut builder = self.api_key(ApiKey::from(key));
+            if let Ok(url) = std::env::var("TYPESAFE_BASE_URL") {
+                builder = builder.base_url(url);
+            }
+            if let Ok(model) = std::env::var("GUIDEME_MODEL") {
+                builder = builder.model(Model::new(model));
+            }
+            Ok(builder)
         }
-        if let Ok(model) = std::env::var("GUIDEME_MODEL") {
-            builder = builder.model(Model::new(model));
-        }
-        Ok(builder)
     }
     /// The API key. Required unless [`from_env`](GuideBuilder::from_env) or
     /// [`client`](GuideBuilder::client) supplies one.
@@ -437,12 +488,18 @@ impl GuideBuilder {
         self.model = model;
         self
     }
+    /// The provider name recorded on the `guideme.ask` span as `gen_ai.provider.name`.
+    /// `from_env` sets this from the chosen provider; set it when building by hand.
+    pub fn provider(mut self, name: &'static str) -> Self {
+        self.provider = name;
+        self
+    }
     /// The guide-wide policy patch.
     pub fn policy(mut self, policy: Policy) -> Self {
         self.policy = policy;
         self
     }
-    /// Retries for `429`, `529` and a failure to connect; default 3.
+    /// Retries for `429`, `503`, `529` and a failure to connect; default 3.
     pub fn max_retries(mut self, n: u32) -> Self {
         self.transport.max_retries = Some(n);
         self
@@ -486,6 +543,7 @@ impl GuideBuilder {
                 model: self.model,
                 policy: self.policy,
                 record_state: self.record_state,
+                provider: self.provider,
             }),
         })
     }

@@ -139,6 +139,11 @@ impl Model {
     pub fn preview() -> Self {
         Self("jev-preview".to_owned())
     }
+    /// `openjev`: the model id for the [OpenJEV](https://openjev.sh) community gateway,
+    /// which serves the same Jev model as TypeSafe under a free public API.
+    pub fn openjev() -> Self {
+        Self("openjev".to_owned())
+    }
     /// A pinned version such as `jev-1.13.0`.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())

@@ -11,6 +11,11 @@ example a ticket). guideme returns the answer as a normal Rust value. A yes/no q
 `bool`. A choice gives a variant of your own enum, and a score gives one of your own ordered
 levels.
 
+> **OpenJEV support:** Jev is built by [TypeSafe](https://typesafe.ai). This fork keeps TypeSafe
+> as the default and adds optional support for [OpenJEV](https://openjev.sh), a free community
+> gateway to the same Jev model — set `OPENJEV_API_KEY` (or `JEV_PROVIDER=openjev`) to use it.
+> Original project: https://github.com/pedro-pscunha/guideme-rust by @pedro-pscunha.
+
 ## Install
 
 ```sh
@@ -21,6 +26,8 @@ cargo add tokio --features rt-multi-thread,macros
 guideme needs Rust 1.98 or newer. The crate includes `#[derive(Choice)]` and
 `#[derive(Levels)]`, so do not add `guideme-derive` yourself. Set the API key in the
 `TYPESAFE_API_KEY` environment variable, or give it to `Guide::builder().api_key(..)`.
+To use the OpenJEV community gateway instead, set `OPENJEV_API_KEY` (or
+`JEV_PROVIDER=openjev`); TypeSafe stays the default when `TYPESAFE_API_KEY` is set.
 
 ## Quick start
 
@@ -304,7 +311,7 @@ Every function that can fail returns `Result<_, guideme::Error>`. `error.kind()`
 | `Auth` | `auth` | `401`: the API key is missing or not valid |
 | `Invalid { detail }` | `invalid` | `422`, with the response body |
 | `RateLimited { retry_after }` | `rate_limited` | `429` after the last retry, or a `retry-after` of more than 30 s |
-| `Overloaded { retry_after }` | `overloaded` | `529` after the last retry, or a `retry-after` of more than 30 s |
+| `Overloaded { retry_after }` | `overloaded` | `503` or `529` after the last retry, or a `retry-after` of more than 30 s |
 | `Transport(..)` | `transport` | connection, TLS, timeout, or a failure to read the body |
 | `UnexpectedStatus { status, body }` | `unexpected_status` | a status that the contract does not define |
 | `Protocol { detail }` | `protocol` | the response breaks the contract: a body that does not decode, the wrong answer kind, an option or level not in the rubric, a probability outside 0..1, a missing answer |
@@ -313,10 +320,11 @@ Every function that can fail returns `Result<_, guideme::Error>`. `error.kind()`
 
 ## Retries and timeouts
 
-guideme retries `429`, `529`, and a request that did not reach a server. A refused or reset
-connection and a failed TLS handshake are failures of this kind. `GET /v1/models` gets the same
-retries as `POST /v1/systemone`, so a `429` on a `models()` call at startup does not stop your
-program. guideme does not retry a timeout of any phase, or a failure to read the body.
+guideme retries `429`, `503`, `529`, and a request that did not reach a server. A refused or
+reset connection and a failed TLS handshake are failures of this kind. `GET /v1/models` gets
+the same retries as `POST /v1/systemone`, so a `429` on a `models()` call at startup does not
+stop your program. guideme does not retry a timeout of any phase, or a failure to read the
+body.
 [`docs/contract.md`](docs/contract.md) gives the reason.
 
 The wait before a retry is `backoff × 2^attempt`, with a maximum of 30 s, plus up to 250 ms of
@@ -421,13 +429,16 @@ reads.
 | `base_url(url)` | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | the API origin |
 | `model(Model)` | `GUIDEME_MODEL` | `jev-latest` | the model or alias |
 | `policy(Policy)` | | the defaults above | the policy for every question of this guide |
-| `max_retries(n)` | | 3 | retries for `429`, `529` and a failure to connect |
+| `max_retries(n)` | | 3 | retries for `429`, `503`, `529` and a failure to connect |
 | `backoff(d)` | | 500 ms | the base of the exponential wait |
 | `timeout(d)` | | 30 s | the deadline for each attempt |
 | `record_state(on)` | | `false` | record the state on the span |
 | `client(Client)` | | none | a `guideme::api::Client` with your own transport |
 
-`Guide::from_env()?` reads the variables and builds the guide. It needs `TYPESAFE_API_KEY`.
+`Guide::from_env()?` reads the variables and builds the guide. With `TYPESAFE_API_KEY` set it
+uses TypeSafe, exactly as before. Set `OPENJEV_API_KEY` instead — or `JEV_PROVIDER=openjev`
+alongside `TYPESAFE_API_KEY` — to use the OpenJEV gateway, which reads `OPENJEV_API_KEY`,
+`OPENJEV_BASE_URL` (default `https://api.openjev.sh`) and model `openjev`.
 `Guide::builder().from_env()?` reads them onto a builder that you continue to configure:
 `Guide::builder().from_env()?.policy(CAUTIOUS).build()?`. `build` makes sure that the policy is
 valid, so a bad policy fails at startup.

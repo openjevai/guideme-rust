@@ -1,4 +1,4 @@
-//! The only module that touches HTTP. Retries `429`/`529` with exponential backoff,
+//! The only module that touches HTTP. Retries `429`/`503`/`529` with exponential backoff,
 //! honouring `retry-after`, and maps statuses to [`Error`].
 //!
 //! Every attempt is one span shaped by the OpenTelemetry HTTP client conventions, so a
@@ -14,6 +14,8 @@ use super::{ModelInfo, ModelsResponse, Request, Response};
 use crate::{ApiKey, Error};
 
 const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
+/// The OpenJEV community gateway origin. Same wire contract as TypeSafe; model id `openjev`.
+pub(crate) const OPENJEV_DEFAULT_BASE_URL: &str = "https://api.openjev.sh";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const JITTER_MS: u64 = 250;
@@ -137,7 +139,7 @@ impl Client {
     /// metadata, so each endpoint writes its own — and `new_request` builds the request again,
     /// because sending one consumes it.
     ///
-    /// Retried: `429`, `529`, and whatever `reqwest` reports as a failure to connect —
+    /// Retried: `429`, `503`, `529`, and whatever `reqwest` reports as a failure to connect —
     /// refused, reset, a TLS handshake. Not retried: a timeout of any phase, or a body
     /// failure. [`ClientBuilder`] sets one overall deadline per attempt and never a
     /// `connect_timeout`, under which `reqwest` classifies a connect-phase timeout as
@@ -182,7 +184,7 @@ impl Client {
                         return decoded;
                     }
                     fail(&span, &status.to_string());
-                    if !matches!(status, 429 | 529) {
+                    if !matches!(status, 429 | 503 | 529) {
                         return Err(classify(status, response).await);
                     }
                     let retry_after = parse_retry_after(&response);
@@ -222,7 +224,7 @@ impl ClientBuilder {
         self.base_url = url;
         self
     }
-    /// Retries for `429`/`529`. `0` disables retrying.
+    /// Retries for `429`/`503`/`529`. `0` disables retrying.
     pub fn max_retries(mut self, n: u32) -> Self {
         self.max_retries = n;
         self
@@ -327,7 +329,7 @@ fn warn_retry(span: &Span, status: Option<u16>, attempt: u32, delay: Duration) {
                 http.response.status_code = i64::from(status),
                 guideme.retry.attempt = ordinal,
                 guideme.retry.delay_ms = delay_ms,
-                "{status} from TypeSafe, retrying in {} ms",
+                "{status} from the Jev API, retrying in {} ms",
                 delay.as_millis(),
             );
         } else {
@@ -338,7 +340,7 @@ fn warn_retry(span: &Span, status: Option<u16>, attempt: u32, delay: Duration) {
                 error.type = "transport",
                 guideme.retry.attempt = ordinal,
                 guideme.retry.delay_ms = delay_ms,
-                "could not reach TypeSafe, retrying in {} ms",
+                "could not reach the Jev API, retrying in {} ms",
                 delay.as_millis(),
             );
         }
